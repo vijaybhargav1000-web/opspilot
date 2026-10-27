@@ -1,5 +1,4 @@
 
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -41,6 +40,7 @@ def test_analyze_and_retrieve_incident(client):
 
     assert created["category"] == "MEMORY_ERROR"
     assert created["incident_id"] is not None
+    assert "retrieved_evidence" in created
 
     incident_id = created["incident_id"]
     retrieved = client.get(f"/incidents/{incident_id}")
@@ -97,3 +97,61 @@ def test_rejects_short_error_log(client):
     )
 
     assert response.status_code == 422
+
+
+def test_analyze_returns_retrieved_evidence(monkeypatch, client):
+    import app.main as main
+
+    monkeypatch.setattr(
+        main,
+        "retrieve_runbooks",
+        lambda query, top_k=3: [
+            {
+                "source": "spark_memory.md",
+                "chunk_id": 0,
+                "score": 0.75,
+                "content": "Inspect executor memory and data skew.",
+            }
+        ],
+    )
+
+    response = client.post(
+        "/incidents/analyze",
+        json={
+            "service": "customer-etl",
+            "error_log": "Executor failed with OutOfMemoryError",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["retrieved_evidence"][0]["source"] == "spark_memory.md"
+    assert body["retrieved_evidence"][0]["score"] == 0.75
+
+
+def test_analyze_continues_when_runbook_directory_is_unavailable(
+    monkeypatch, client
+):
+    import app.main as main
+
+    def unavailable_retriever(query, top_k=3):
+        raise OSError("Runbook storage unavailable")
+
+    monkeypatch.setattr(
+        main,
+        "retrieve_runbooks",
+        unavailable_retriever,
+    )
+
+    response = client.post(
+        "/incidents/analyze",
+        json={
+            "service": "customer-etl",
+            "error_log": "Executor failed with OutOfMemoryError",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["category"] == "MEMORY_ERROR"
+    assert body["retrieved_evidence"] == []

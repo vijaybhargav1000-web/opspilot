@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.database import get_connection, initialize_database
+from app.retrieval import retrieve_runbooks
 
 
 @asynccontextmanager
@@ -17,7 +18,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="OpsPilot",
     description="Production Incident Resolution Assistant",
-    version="0.3.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -27,6 +28,13 @@ class IncidentRequest(BaseModel):
     error_log: str = Field(min_length=10, max_length=12000)
 
 
+class RetrievedEvidence(BaseModel):
+    source: str
+    chunk_id: int
+    score: float
+    content: str
+
+
 class IncidentReport(BaseModel):
     service: str
     category: str
@@ -34,6 +42,9 @@ class IncidentReport(BaseModel):
     recommended_steps: list[str]
     human_review_required: bool
     incident_id: int | None = None
+    retrieved_evidence: list[RetrievedEvidence] = Field(
+        default_factory=list
+    )
 
 
 def classify_incident(
@@ -42,50 +53,78 @@ def classify_incident(
 ) -> IncidentReport:
     log = error_log.lower()
 
-    if "out of memory" in log or "java heap space" in log:
+    # Memory-related failures, including common JVM and Spark messages.
+    memory_terms = (
+        "outofmemoryerror",
+        "out of memory",
+        "out-of-memory",
+        "java heap space",
+        "memoryerror",
+        "executor lost",
+    )
+
+    timeout_terms = (
+        "timeout",
+        "timed out",
+        "deadline exceeded",
+        "read timed out",
+        "connection timed out",
+    )
+
+    permission_terms = (
+        "permission denied",
+        "access denied",
+        "unauthorized",
+        "forbidden",
+        "accessdenied",
+    )
+
+    if any(term in log for term in memory_terms):
         category = "MEMORY_ERROR"
         cause = (
-            "The Spark process may have exceeded "
-            "available memory."
+            "The process may have exceeded available memory, "
+            "encountered memory pressure, or lost a Spark executor."
         )
         steps = [
-            "Inspect executor memory usage and failed task logs.",
-            "Check partition sizes and possible data skew.",
-            "Review recent changes before adjusting memory settings.",
+            "Inspect executor memory metrics and failed task logs.",
+            "Check partition sizes, data skew, and recent data-volume changes.",
+            "Review recent code and configuration changes before tuning memory.",
+            "Validate any proposed change in a safe environment before rollout.",
         ]
 
-    elif "timeout" in log or "timed out" in log:
+    elif any(term in log for term in timeout_terms):
         category = "TIMEOUT"
         cause = (
-            "A request or processing operation exceeded "
-            "its time limit."
+            "A request or processing operation may have exceeded "
+            "its time limit or waited too long for a dependency."
         )
         steps = [
-            "Identify the component that timed out.",
-            "Check service health, latency, and dependency logs.",
-            "Retry only if the operation is safe and idempotent.",
+            "Identify the component and dependency that timed out.",
+            "Check service health, latency metrics, and dependency logs.",
+            "Inspect connection pools, resource saturation, and recent changes.",
+            "Retry only when the operation is safe and idempotent.",
         ]
 
-    elif "permission denied" in log or "access denied" in log:
+    elif any(term in log for term in permission_terms):
         category = "PERMISSION_ERROR"
         cause = (
-            "The service may lack permission to access a resource."
+            "The service identity may lack permission to access "
+            "a resource or perform the requested operation."
         )
         steps = [
             "Identify the exact resource and denied operation.",
-            "Check the service identity and applicable permissions.",
-            "Request the minimum required permission; "
-            "do not bypass access controls.",
+            "Check the service identity, role, policy, and resource policy.",
+            "Request only the minimum permissions required.",
+            "Never bypass access controls or expose credentials in logs.",
         ]
 
     else:
         category = "UNKNOWN"
-        cause = (
-            "The available log does not match a known rule."
-        )
+        cause = "The available log does not match a known classification rule."
         steps = [
-            "Collect surrounding logs and the full error traceback.",
-            "Check recent deployments and dependency health.",
+            "Collect surrounding logs, the full traceback, and a request identifier.",
+            "Check recent deployments, configuration changes, and dependency health.",
+            "Compare the failure with known incidents and runbooks.",
             "Escalate for human investigation if the cause remains unclear.",
         ]
 
@@ -111,6 +150,26 @@ def analyze_incident(incident: IncidentRequest):
     report = classify_incident(
         incident.service,
         incident.error_log,
+    )
+
+    # Retrieval is supplemental. A missing or unreadable runbook
+    # must not prevent basic incident analysis.
+    try:
+        raw_evidence = retrieve_runbooks(
+            f"{report.category} {incident.service} {incident.error_log}",
+            top_k=3,
+        )
+
+        evidence = [
+            RetrievedEvidence.model_validate(item)
+            for item in raw_evidence
+        ]
+
+    except OSError:
+        evidence = []
+
+    report = report.model_copy(
+        update={"retrieved_evidence": evidence}
     )
 
     with get_connection() as connection:
@@ -160,12 +219,9 @@ def get_incident(incident_id: int):
         )
 
     incident = dict(row)
-
     incident["recommended_steps"] = json.loads(
         incident["recommended_steps"]
     )
-
-    # Avoid returning the raw error log from this endpoint.
     incident.pop("error_log", None)
 
     return incident
