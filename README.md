@@ -1,113 +1,117 @@
-# OpsPilot — AI-Powered Incident Resolution Assistant
+# OpsPilot — AI-Powered Production Incident Assistant
 
-OpsPilot is a developer-focused project that analyzes application and data-pipeline errors, classifies incidents, recommends troubleshooting steps, and stores incident records for later investigation.
+OpsPilot is a local-first incident-support application that classifies operational errors, retrieves relevant troubleshooting runbooks, generates evidence-grounded explanations using a local large language model (LLM), and stores incident reports for later retrieval.
 
-The project is being developed incrementally, starting with a local API and rule-based classification, with retrieval-augmented generation (RAG) and LLM-assisted analysis planned as future capabilities.
+The project demonstrates practical concepts in **FastAPI, Python, SQLite, retrieval-augmented generation (RAG), semantic search, local LLM integration, automated testing, and incident troubleshooting**.
 
-## Problem Statement
+> **Project status:** Working local prototype with a verified end-to-end incident flow and automated tests. It is not yet a fully production-hardened incident management platform.
 
-When a production service fails, engineers need to identify the likely cause, find relevant troubleshooting guidance, and respond consistently.
+## Key Features
 
-OpsPilot aims to streamline this workflow by providing a structured incident-analysis API and a foundation for evidence-grounded troubleshooting assistance.
-
-## Current Features
-
-- **REST API:** Built with FastAPI.
-- **Incident classification:** Rule-based detection of memory errors, timeouts, permission errors, and unknown errors.
-- **Incident persistence:** Stores incident details and recommendations in SQLite.
-- **Incident retrieval:** Retrieves saved incidents by ID.
-- **Input validation:** Uses Pydantic models to validate requests.
-- **Automated tests:** Uses pytest and FastAPI's test client to validate core behavior.
-- **Interactive API documentation:** Available through Swagger UI.
+- **Incident analysis API:** Accepts service names and error logs and classifies known incident patterns.
+- **Runbook retrieval:** Retrieves relevant Markdown troubleshooting guidance using keyword-based ranking.
+- **Semantic retrieval:** Uses sentence embeddings to find semantically relevant runbook content.
+- **Local LLM integration:** Uses Ollama to generate incident explanations without requiring a paid hosted LLM API.
+- **Evidence-aware explanations:** Supplies retrieved runbook evidence and incident details to the LLM.
+- **Persistent incident history:** Stores incident reports and AI explanations in SQLite.
+- **Graceful AI fallback:** Preserves rule-based incident analysis when AI generation is unavailable.
+- **Human-review safeguard:** Marks incident recommendations as requiring human review.
+- **Automated tests:** Covers API behavior, database operations, retrieval, ranking, and failure handling.
 
 ## Architecture
 
 ```text
-Client / API Consumer
-        |
-        v
-    FastAPI API
-        |
-        v
- Request Validation
-      (Pydantic)
-        |
-        v
- Incident Classifier
-    (Rule-Based)
-        |
-        v
- Recommendation Logic
-        |
-        v
- SQLite Database
-        |
-        v
- Incident Response
+                    User / API Client
+                           |
+                           v
+                     FastAPI API
+                           |
+                           v
+                   Incident Classifier
+                           |
+                           v
+                   Runbook Retrieval
+                    /            \
+                   v              v
+             Keyword Search   Semantic Search
+                    \            /
+                     v          v
+                  Retrieved Evidence
+                           |
+                           v
+                    Local Ollama LLM
+                           |
+                           v
+                  Incident Explanation
+                           |
+                           v
+                      SQLite DB
+                           |
+                           v
+                 Incident Report Response
 ```
 
-### Current Technology Stack
+The application uses deterministic rules for initial classification. Retrieved runbook evidence provides troubleshooting context for the local LLM. The LLM's explanation is advisory; it does not independently authorize production changes.
 
-| Component | Technology |
+## Technology Stack
+
+| Area | Technology |
 |---|---|
-| Language | Python |
-| API framework | FastAPI |
+| API | Python, FastAPI |
 | Request validation | Pydantic |
 | Database | SQLite |
-| Testing | pytest |
-| API documentation | Swagger UI |
-| Version control | Git and GitHub |
+| Retrieval | Keyword matching and semantic embeddings |
+| Embedding model | `all-MiniLM-L6-v2` via Sentence Transformers |
+| Local LLM | Ollama with `llama3.2:3b` |
+| HTTP integration | Requests |
+| Testing | Pytest |
+| Development | Git and GitHub |
 
-## API Endpoints
+## Project Structure
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | `/health` | Check application health |
-| POST | `/incidents/analyze` | Analyze an error and create an incident record |
-| GET | `/incidents/{incident_id}` | Retrieve a previously saved incident |
-
-### Example: Analyze an Incident
-
-Request:
-
-```json
-{
-  "service": "customer-etl",
-  "error_log": "Executor lost due to java.lang.OutOfMemoryError"
-}
+```text
+OpsPilot/
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── database.py
+│   ├── retrieval.py
+│   ├── semantic_retrieval.py
+│   └── ollama_client.py
+├── runbooks/
+│   ├── spark_memory.md
+│   ├── api_timeout.md
+│   └── permission_error.md
+├── tests/
+│   ├── test_database.py
+│   ├── test_incident.py
+│   ├── test_retrieval.py
+│   └── test_semantic_retrieval.py
+├── scripts/
+│   └── compare_retrieval.py
+├── requirements.txt
+└── README.md
 ```
 
-Example response structure:
+## Prerequisites
 
-```json
-{
-  "service": "customer-etl",
-  "category": "MEMORY_ERROR",
-  "likely_cause": "The Spark process may have exceeded available memory.",
-  "recommended_steps": [
-    "Inspect executor memory usage and Spark UI metrics.",
-    "Check for data skew and oversized partitions.",
-    "Review join strategies and unnecessary data caching."
-  ],
-  "human_review_required": true,
-  "incident_id": 1
-}
-```
+- Python installed
+- Git
+- Ollama installed locally
+- The `llama3.2:3b` model downloaded through Ollama
 
-The response is illustrative. Actual recommendation text depends on the current application implementation.
+The semantic retrieval component may download its embedding model the first time it runs. Internet access may be required for that initial download.
 
-## Run Locally
+## Setup
 
 ### 1. Clone the repository
 
-```bash
+```powershell
 git clone https://github.com/vijaybhargav1000-web/opspilot.git
-cd opspilot
+cd OpsPilot
 ```
 
 ### 2. Create and activate a virtual environment
-
-Windows PowerShell:
 
 ```powershell
 python -m venv .venv
@@ -117,62 +121,124 @@ python -m venv .venv
 ### 3. Install dependencies
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-### 4. Start the API
+### 4. Start Ollama
+
+Download the model if it is not already installed:
 
 ```powershell
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
+ollama pull llama3.2:3b
 ```
 
-### 5. Open the API documentation
+Ensure Ollama is running and the model is available:
 
-- Swagger UI: http://127.0.0.1:8001/docs
-- Health check: http://127.0.0.1:8001/health
+```powershell
+ollama list
+```
 
-Keep the terminal running while testing the API.
+### 5. Start the API
+
+```powershell
+python -m uvicorn app.main:app --reload --port 8001
+```
+
+Open the interactive API documentation at:
+
+`http://127.0.0.1:8001/docs`
+
+Check the health endpoint at:
+
+`http://127.0.0.1:8001/health`
+
+## Example: Analyze an Incident
+
+Send a `POST` request to `/incidents/analyze` with a JSON body such as:
+
+```json
+{
+  "service": "payment-api",
+  "error_log": "ERROR: OutOfMemoryError while processing payment requests. Worker memory usage exceeded available capacity."
+}
+```
+
+PowerShell example:
+
+```powershell
+$body = @{
+    service = "payment-api"
+    error_log = "ERROR: OutOfMemoryError while processing payment requests. Worker memory usage exceeded available capacity."
+} | ConvertTo-Json
+
+$result = Invoke-RestMethod `
+    -Uri "http://127.0.0.1:8001/incidents/analyze" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+
+$result | ConvertTo-Json -Depth 8
+```
+
+The response includes the incident classification, likely cause, recommended diagnostic steps, human-review requirement, incident ID, retrieved evidence, and AI explanation when available.
+
+### Retrieve a Saved Incident
+
+Use the ID returned by the analysis endpoint:
+
+```powershell
+$id = $result.incident_id
+
+Invoke-RestMethod "http://127.0.0.1:8001/incidents/$id" |
+    ConvertTo-Json -Depth 8
+```
 
 ## Run Tests
 
-In a separate terminal, activate the virtual environment and run:
+Run the full test suite from the repository root:
 
 ```powershell
 python -m pytest -v
 ```
 
-The initial test suite covers health checks, incident creation and retrieval, missing incident IDs, classification behavior, and input validation.
+The current development suite has **38 passing tests**. Run the tests again after making changes to verify the current checkout.
 
-## Roadmap
+## Retrieval Evaluation
 
-The following capabilities are planned, not yet claimed as implemented:
+The project includes a small labelled query set for comparing retrieval behavior with metrics such as:
 
-- Local runbook ingestion and document parsing.
-- Retrieval-augmented generation (RAG) for troubleshooting guidance.
-- Hybrid retrieval and reranking where appropriate.
-- LLM-assisted incident explanations grounded in retrieved evidence.
-- Source citations and confidence-aware responses.
-- Structured logging, improved error handling, and observability.
-- Evaluation tests for retrieval quality and answer correctness.
-- Containerization and CI automation.
-- Optional cloud deployment when appropriate.
+- **Hit@K:** Whether at least one relevant source appears in the top K results.
+- **Recall@K:** The fraction of relevant sources retrieved in the top K results.
+- **Mean Reciprocal Rank (MRR):** How highly the first relevant result is ranked.
 
-## Design Principles
+The evaluation set is small and intended for development. Its results should not be interpreted as proof of performance on real-world production traffic.
 
-- **Evidence before recommendations:** Future AI-generated guidance should be grounded in relevant runbooks and logs.
-- **Human oversight:** Recommendations should be reviewed before executing potentially risky remediation actions.
-- **Safe defaults:** Do not automatically execute destructive production operations.
-- **Testability:** Core API behavior should be covered by automated tests.
-- **Incremental engineering:** Clearly distinguish implemented capabilities from planned improvements.
+## Reliability and Safety
 
-## Project Status
+- AI explanations are advisory and may be unavailable if the local model is stopped or a request times out.
+- Rule-based incident classification is separate from the LLM-generated explanation.
+- Retrieved evidence provides context but does not guarantee that a diagnosis is correct.
+- Incident recommendations require human review before production changes.
+- Logs and runbook content should be treated as untrusted input.
+- Production deployment would require further validation of authentication, authorization, sensitive-data handling, observability, concurrency, resource limits, and recovery procedures.
 
-**Stage 1 — Local API foundation**
+## Current Limitations
 
-The current implementation provides a rule-based incident-analysis API, SQLite persistence, incident retrieval, and automated tests.
+- Classification rules cover a limited set of incident patterns.
+- The runbook collection is small.
+- Retrieval quality needs evaluation against a larger, representative dataset.
+- SQLite is suitable for this local prototype but may not be the appropriate database for a larger multi-user deployment.
+- The local LLM's latency and output quality depend on available hardware and model behavior.
+- Docker deployment, cloud hosting, and production operational controls have not been established as part of the current verified workflow.
 
-RAG, external LLM integration, production deployment, and production-scale reliability have not yet been established.
+## Future Improvements
 
-## License
+- Expand runbooks and incident categories.
+- Improve retrieval relevance and reduce unrelated evidence.
+- Add structured output validation and stronger evaluation for LLM responses.
+- Introduce authentication, role-based access, audit logging, and sensitive-log redaction.
+- Add metrics, tracing, health monitoring, and controlled retries.
+- Add containerized deployment after checking local hardware constraints.
+- Evaluate against a larger labelled incident dataset.
 
-No license has been selected yet. All rights and reuse permissions remain subject to the repository owner's rights until a license is added.
