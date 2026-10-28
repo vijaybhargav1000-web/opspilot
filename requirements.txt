@@ -4,3 +4,5 @@ uvicorn
 pydantic
 pytest
 httpx
+requests
+

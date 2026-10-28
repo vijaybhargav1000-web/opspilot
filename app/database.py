@@ -15,7 +15,7 @@ def get_connection(db_path: Path | str | None = None):
 
 
 def initialize_database(db_path: Path | str | None = None):
-    """Create the incidents table if it does not already exist."""
+    """Create the incidents table and safely migrate existing databases."""
     with get_connection(db_path) as connection:
         connection.execute(
             """
@@ -31,3 +31,15 @@ def initialize_database(db_path: Path | str | None = None):
             )
             """
         )
+
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(incidents)"
+            ).fetchall()
+        }
+
+        if "ai_explanation" not in columns:
+            connection.execute(
+                "ALTER TABLE incidents ADD COLUMN ai_explanation TEXT"
+            )

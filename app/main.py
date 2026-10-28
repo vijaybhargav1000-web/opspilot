@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.database import get_connection, initialize_database
+from app.ollama_client import explain_incident
 from app.retrieval import retrieve_runbooks
 
 
@@ -23,7 +24,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="OpsPilot",
     description="Production Incident Resolution Assistant",
-    version="0.5.0",
+    version="0.7.0",
     lifespan=lifespan,
 )
 
@@ -44,6 +45,7 @@ class IncidentReport(BaseModel):
     service: str
     category: str
     likely_cause: str
+    ai_explanation: str | None = None
     recommended_steps: list[str]
     human_review_required: bool
     incident_id: int | None = None
@@ -156,8 +158,8 @@ def analyze_incident(incident: IncidentRequest):
         incident.error_log,
     )
 
-    # Retrieval is supplemental. Do not fail incident analysis
-    # merely because the runbook store is unavailable.
+    # Retrieve runbook evidence. Retrieval failures should not prevent
+    # deterministic incident analysis.
     try:
         raw_evidence = retrieve_runbooks(
             f"{report.category} {incident.service} {incident.error_log}",
@@ -178,6 +180,8 @@ def analyze_incident(incident: IncidentRequest):
         update={"retrieved_evidence": evidence}
     )
 
+    # Save the deterministic incident first so the incident is retained
+    # even if Ollama is unavailable.
     try:
         with get_connection() as connection:
             cursor = connection.execute(
@@ -209,15 +213,51 @@ def analyze_incident(incident: IncidentRequest):
         ) from None
 
     except RuntimeError:
-        # Also handles unexpected failures from a connection provider.
         logger.exception("Unexpected failure while saving incident")
         raise HTTPException(
             status_code=500,
             detail="Unable to save incident. Please retry later.",
         ) from None
 
+    # Generate an optional explanation using local Ollama.
+    # The helper returns None when Ollama is unavailable.
+    ai_explanation = explain_incident(
+        category=report.category,
+        service=report.service,
+        likely_cause=report.likely_cause,
+        recommended_steps=report.recommended_steps,
+        evidence=[
+            item.model_dump()
+            for item in report.retrieved_evidence
+        ],
+    )
+
+    # Persist the explanation separately. Failure to save this optional
+    # field should not discard the incident or its deterministic report.
+    if ai_explanation is not None:
+        try:
+            with get_connection() as connection:
+                connection.execute(
+                    """
+                    UPDATE incidents
+                    SET ai_explanation = ?
+                    WHERE incident_id = ?
+                    """,
+                    (ai_explanation, incident_id),
+                )
+        except sqlite3.Error:
+            logger.exception(
+                "Failed to persist AI explanation for incident %s",
+                incident_id,
+            )
+            ai_explanation = None
+
     return report.model_copy(
-        update={"incident_id": incident_id}
+        update={
+            "incident_id": incident_id,
+            "ai_explanation": ai_explanation,
+            "human_review_required": True,
+        }
     )
 
 
