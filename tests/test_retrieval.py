@@ -154,3 +154,37 @@ def test_metrics_reject_empty_relevant_sources():
 
     with pytest.raises(ValueError):
         hit_rate_at_k([], set(), 3)
+
+from app.retrieval import diversify_results
+
+
+def test_diversify_results_prefers_distinct_sources():
+    results = [
+        {"source": "spark_memory.md", "chunk_id": 0, "score": 0.9, "content": "A"},
+        {"source": "spark_memory.md", "chunk_id": 1, "score": 0.8, "content": "B"},
+        {"source": "api_timeout.md", "chunk_id": 0, "score": 0.7, "content": "C"},
+    ]
+
+    diversified = diversify_results(results, top_k=3)
+
+    assert [item["source"] for item in diversified] == [
+        "spark_memory.md",
+        "api_timeout.md",
+        "spark_memory.md",
+    ]
+
+
+def test_diversify_results_respects_top_k():
+    results = [
+        {"source": "spark_memory.md", "chunk_id": 0, "score": 0.9, "content": "A"},
+        {"source": "api_timeout.md", "chunk_id": 0, "score": 0.8, "content": "B"},
+    ]
+
+    assert len(diversify_results(results, top_k=1)) == 1
+
+
+def test_diversify_results_rejects_invalid_top_k():
+    import pytest
+
+    with pytest.raises(ValueError, match="top_k"):
+        diversify_results([], top_k=0)

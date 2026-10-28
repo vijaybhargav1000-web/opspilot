@@ -1,5 +1,7 @@
 
 import json
+import logging
+import sqlite3
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -7,6 +9,9 @@ from pydantic import BaseModel, Field
 
 from app.database import get_connection, initialize_database
 from app.retrieval import retrieve_runbooks
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -53,7 +58,6 @@ def classify_incident(
 ) -> IncidentReport:
     log = error_log.lower()
 
-    # Memory-related failures, including common JVM and Spark messages.
     memory_terms = (
         "outofmemoryerror",
         "out of memory",
@@ -152,48 +156,65 @@ def analyze_incident(incident: IncidentRequest):
         incident.error_log,
     )
 
-    # Retrieval is supplemental. A missing or unreadable runbook
-    # must not prevent basic incident analysis.
+    # Retrieval is supplemental. Do not fail incident analysis
+    # merely because the runbook store is unavailable.
     try:
         raw_evidence = retrieve_runbooks(
             f"{report.category} {incident.service} {incident.error_log}",
             top_k=3,
         )
-
         evidence = [
             RetrievedEvidence.model_validate(item)
             for item in raw_evidence
         ]
-
     except OSError:
+        logger.warning(
+            "Runbook retrieval failed due to an OS-level error",
+            exc_info=True,
+        )
         evidence = []
 
     report = report.model_copy(
         update={"retrieved_evidence": evidence}
     )
 
-    with get_connection() as connection:
-        cursor = connection.execute(
-            """
-            INSERT INTO incidents (
-                service,
-                error_log,
-                category,
-                likely_cause,
-                recommended_steps
+    try:
+        with get_connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO incidents (
+                    service,
+                    error_log,
+                    category,
+                    likely_cause,
+                    recommended_steps
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    report.service,
+                    incident.error_log,
+                    report.category,
+                    report.likely_cause,
+                    json.dumps(report.recommended_steps),
+                ),
             )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                report.service,
-                incident.error_log,
-                report.category,
-                report.likely_cause,
-                json.dumps(report.recommended_steps),
-            ),
-        )
+            incident_id = cursor.lastrowid
 
-        incident_id = cursor.lastrowid
+    except sqlite3.Error:
+        logger.exception("Failed to persist incident to the database")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save incident. Please retry later.",
+        ) from None
+
+    except RuntimeError:
+        # Also handles unexpected failures from a connection provider.
+        logger.exception("Unexpected failure while saving incident")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to save incident. Please retry later.",
+        ) from None
 
     return report.model_copy(
         update={"incident_id": incident_id}
@@ -202,15 +223,23 @@ def analyze_incident(incident: IncidentRequest):
 
 @app.get("/incidents/{incident_id}")
 def get_incident(incident_id: int):
-    with get_connection() as connection:
-        row = connection.execute(
-            """
-            SELECT *
-            FROM incidents
-            WHERE incident_id = ?
-            """,
-            (incident_id,),
-        ).fetchone()
+    try:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM incidents
+                WHERE incident_id = ?
+                """,
+                (incident_id,),
+            ).fetchone()
+
+    except sqlite3.Error:
+        logger.exception("Failed to retrieve incident from the database")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to retrieve incident. Please retry later.",
+        ) from None
 
     if row is None:
         raise HTTPException(

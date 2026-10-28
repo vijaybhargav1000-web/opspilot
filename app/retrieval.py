@@ -55,11 +55,41 @@ def chunk_text(
     return chunks
 
 
+def diversify_results(
+    results: list[dict[str, str | int | float]],
+    top_k: int,
+) -> list[dict[str, str | int | float]]:
+    """Prefer distinct runbook sources before repeating a source."""
+    if top_k < 1:
+        raise ValueError("top_k must be at least 1")
+
+    selected = []
+    deferred = []
+    seen_sources = set()
+
+    # First pass: select the highest-ranked chunk from each source.
+    for result in results:
+        source = str(result["source"])
+
+        if source not in seen_sources:
+            selected.append(result)
+            seen_sources.add(source)
+        else:
+            deferred.append(result)
+
+    # Fill remaining slots with repeated sources in original rank order.
+    return (selected + deferred)[:top_k]
+
+
 def retrieve_runbooks(
     query: str,
     top_k: int = 3,
+    diversify: bool = False,
 ) -> list[dict[str, str | int | float]]:
-    """Rank runbook chunks by keyword overlap and category relevance."""
+    """Rank runbook chunks by keyword overlap and category relevance.
+
+    Set diversify=True to prefer distinct runbook sources in the results.
+    """
     if top_k < 1:
         raise ValueError("top_k must be at least 1")
 
@@ -68,7 +98,6 @@ def retrieve_runbooks(
     if not query_terms:
         return []
 
-    # Map each known runbook to the category it supports.
     category_by_source = {
         "spark_memory.md": {"memory_error"},
         "api_timeout.md": {"timeout"},
@@ -106,7 +135,7 @@ def retrieve_runbooks(
                 "content": chunk,
             })
 
-    # Higher scores first, then deterministic tie-breaking.
+    # Sort by descending score, then deterministic tie-breaking.
     results.sort(
         key=lambda item: (
             -float(item["score"]),
@@ -114,5 +143,8 @@ def retrieve_runbooks(
             int(item["chunk_id"]),
         )
     )
+
+    if diversify:
+        return diversify_results(results, top_k)
 
     return results[:top_k]

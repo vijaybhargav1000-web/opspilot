@@ -3,7 +3,11 @@ from functools import lru_cache
 
 from sentence_transformers import SentenceTransformer, util
 
-from app.retrieval import chunk_text, load_runbooks
+from app.retrieval import (
+    chunk_text,
+    diversify_results,
+    load_runbooks,
+)
 
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
@@ -18,8 +22,12 @@ def load_embedding_model() -> SentenceTransformer:
 def retrieve_semantic(
     query: str,
     top_k: int = 3,
+    diversify: bool = False,
 ) -> list[dict[str, str | int | float]]:
-    """Retrieve runbook chunks using semantic similarity."""
+    """Retrieve runbook chunks using semantic similarity.
+
+    Set diversify=True to prefer distinct runbook sources in the results.
+    """
     if top_k < 1:
         raise ValueError("top_k must be at least 1")
 
@@ -59,11 +67,14 @@ def retrieve_semantic(
 
     results = []
 
-    for index in ranked_indices[:top_k]:
+    for index in ranked_indices:
         item = chunks[index]
         results.append({
             **item,
             "score": round(float(similarities[index].item()), 4),
         })
 
-    return results
+    if diversify:
+        return diversify_results(results, top_k)
+
+    return results[:top_k]

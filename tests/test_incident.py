@@ -155,3 +155,58 @@ def test_analyze_continues_when_runbook_directory_is_unavailable(
     body = response.json()
     assert body["category"] == "MEMORY_ERROR"
     assert body["retrieved_evidence"] == []
+
+
+def test_analyze_returns_500_when_database_write_fails(monkeypatch, client):
+    import app.main as main
+
+    class FailingConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def execute(self, *args, **kwargs):
+            raise RuntimeError("simulated database failure")
+
+    monkeypatch.setattr(
+        main,
+        "get_connection",
+        lambda: FailingConnection(),
+    )
+
+    response = client.post(
+        "/incidents/analyze",
+        json={
+            "service": "orders-api",
+            "error_log": "Database request timed out after 30 seconds",
+        },
+    )
+
+    assert response.status_code == 500
+    assert "simulated database failure" not in response.text
+
+def test_rejects_empty_service(client):
+    response = client.post(
+        "/incidents/analyze",
+        json={
+            "service": "",
+            "error_log": "Request timed out while calling database",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_rejects_error_log_over_maximum_length(client):
+    response = client.post(
+        "/incidents/analyze",
+        json={
+            "service": "orders-api",
+            "error_log": "x" * 12001,
+        },
+    )
+
+    assert response.status_code == 422
+
