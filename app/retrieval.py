@@ -86,7 +86,11 @@ def retrieve_runbooks(
     top_k: int = 3,
     diversify: bool = False,
 ) -> list[dict[str, str | int | float]]:
-    """Rank runbook chunks by keyword overlap and category relevance.
+    """Rank runbook chunks using a heuristic keyword score.
+
+    Score = keyword overlap ratio + optional category bonus of 0.5.
+    The overlap ratio is between 0 and 1; the total score can reach 1.5.
+    Scores are ranking heuristics, not normalized similarity probabilities.
 
     Set diversify=True to prefer distinct runbook sources in the results.
     """

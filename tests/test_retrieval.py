@@ -1,8 +1,8 @@
 
-
 import pytest
 
 import app.retrieval as retrieval
+from app.retrieval import diversify_results
 
 
 def test_loads_runbooks_and_preserves_source(monkeypatch, tmp_path):
@@ -115,9 +115,7 @@ def recall_at_k(results, relevant_sources, k):
     if not relevant_sources:
         raise ValueError("relevant_sources must not be empty")
 
-    retrieved_sources = {
-        item["source"] for item in results[:k]
-    }
+    retrieved_sources = {item["source"] for item in results[:k]}
 
     return len(retrieved_sources & relevant_sources) / len(relevant_sources)
 
@@ -127,9 +125,7 @@ def hit_rate_at_k(results, relevant_sources, k):
     if not relevant_sources:
         raise ValueError("relevant_sources must not be empty")
 
-    retrieved_sources = {
-        item["source"] for item in results[:k]
-    }
+    retrieved_sources = {item["source"] for item in results[:k]}
 
     return float(bool(retrieved_sources & relevant_sources))
 
@@ -155,14 +151,27 @@ def test_metrics_reject_empty_relevant_sources():
     with pytest.raises(ValueError):
         hit_rate_at_k([], set(), 3)
 
-from app.retrieval import diversify_results
-
 
 def test_diversify_results_prefers_distinct_sources():
     results = [
-        {"source": "spark_memory.md", "chunk_id": 0, "score": 0.9, "content": "A"},
-        {"source": "spark_memory.md", "chunk_id": 1, "score": 0.8, "content": "B"},
-        {"source": "api_timeout.md", "chunk_id": 0, "score": 0.7, "content": "C"},
+        {
+            "source": "spark_memory.md",
+            "chunk_id": 0,
+            "score": 0.9,
+            "content": "A",
+        },
+        {
+            "source": "spark_memory.md",
+            "chunk_id": 1,
+            "score": 0.8,
+            "content": "B",
+        },
+        {
+            "source": "api_timeout.md",
+            "chunk_id": 0,
+            "score": 0.7,
+            "content": "C",
+        },
     ]
 
     diversified = diversify_results(results, top_k=3)
@@ -176,15 +185,90 @@ def test_diversify_results_prefers_distinct_sources():
 
 def test_diversify_results_respects_top_k():
     results = [
-        {"source": "spark_memory.md", "chunk_id": 0, "score": 0.9, "content": "A"},
-        {"source": "api_timeout.md", "chunk_id": 0, "score": 0.8, "content": "B"},
+        {
+            "source": "spark_memory.md",
+            "chunk_id": 0,
+            "score": 0.9,
+            "content": "A",
+        },
+        {
+            "source": "api_timeout.md",
+            "chunk_id": 0,
+            "score": 0.8,
+            "content": "B",
+        },
     ]
 
     assert len(diversify_results(results, top_k=1)) == 1
 
 
 def test_diversify_results_rejects_invalid_top_k():
-    import pytest
-
     with pytest.raises(ValueError, match="top_k"):
         diversify_results([], top_k=0)
+
+
+def test_keyword_overlap_score_is_calculated_correctly(monkeypatch):
+    monkeypatch.setattr(
+        retrieval,
+        "load_runbooks",
+        lambda: [
+            {
+                "source": "api_timeout.md",
+                "content": "executor memory service",
+            }
+        ],
+    )
+
+    results = retrieval.retrieve_runbooks("executor memory", top_k=1)
+
+    assert len(results) == 1
+    assert results[0]["score"] == 1.0
+
+
+def test_category_match_adds_half_point_bonus(monkeypatch):
+    monkeypatch.setattr(
+        retrieval,
+        "load_runbooks",
+        lambda: [
+            {
+                "source": "spark_memory.md",
+                "content": "executor memory_error",
+            }
+        ],
+    )
+
+    baseline = retrieval.retrieve_runbooks("executor memory", top_k=1)
+    category_match = retrieval.retrieve_runbooks(
+        "executor memory_error",
+        top_k=1,
+    )
+
+    # "memory" does not equal the token "memory_error".
+    assert baseline[0]["score"] == 0.5
+
+    # Both query terms match, and the category bonus adds 0.5.
+    assert category_match[0]["score"] == 1.5
+    assert category_match[0]["score"] > baseline[0]["score"]
+
+
+def test_equal_scores_have_deterministic_order_and_respect_top_k(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        retrieval,
+        "load_runbooks",
+        lambda: [
+            {"source": "spark_memory.md", "content": "executor service"},
+            {"source": "permission_error.md", "content": "executor service"},
+            {"source": "api_timeout.md", "content": "executor service"},
+        ],
+    )
+
+    results = retrieval.retrieve_runbooks("executor", top_k=2)
+
+    assert [item["source"] for item in results] == [
+        "api_timeout.md",
+        "permission_error.md",
+    ]
+    assert len(results) == 2
+    assert all(item["score"] == 1.0 for item in results)

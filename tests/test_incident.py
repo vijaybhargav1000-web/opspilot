@@ -311,3 +311,40 @@ def test_empty_ai_explanation_is_not_persisted(
 
     assert retrieved.status_code == 200
     assert retrieved.json()["ai_explanation"] is None
+
+def test_ai_explanation_uses_clear_incident_sections(monkeypatch, client):
+    import app.main as main
+
+    expected_explanation = (
+        "Assessment:\n"
+        "The memory error is confirmed, but the root cause is not.\n\n"
+        "Next checks:\n"
+        "Inspect executor logs and partition sizes.\n\n"
+        "Safety:\n"
+        "Human review is required before remediation."
+    )
+
+    monkeypatch.setattr(
+        main,
+        "explain_incident",
+        lambda **kwargs: expected_explanation,
+    )
+
+    response = client.post(
+        "/incidents/analyze",
+        json={
+            "service": "customer-etl",
+            "error_log": (
+                "Spark executor failed with Java heap space"
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    explanation = response.json()["ai_explanation"]
+
+    assert explanation is not None
+    assert "Assessment:" in explanation
+    assert "Next checks:" in explanation
+    assert "Safety:" in explanation
+    assert response.json()["human_review_required"] is True
